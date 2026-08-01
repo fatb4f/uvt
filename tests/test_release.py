@@ -17,18 +17,26 @@ from copier import run_copy
 from .factories import CopierAnswersFactory
 
 
-def write_valid_wheel(path: Path) -> None:
+def write_valid_wheel(
+    path: Path,
+    *,
+    import_name: str = "example_project",
+    typed_name: str | None = None,
+    include_init: bool = True,
+    metadata_version: str = "2.4",
+) -> None:
     dist_info = "example_project-0.1.0.dist-info"
-    contents = {
-        "example_project/__init__.py": b'"""Example."""\n',
-        "example_project/py.typed": b"",
+    contents: dict[str, bytes] = {
         f"{dist_info}/METADATA": (
-            b"Metadata-Version: 2.4\nName: example-project\nVersion: 0.1.0\n"
+            f"Metadata-Version: {metadata_version}\nName: example-project\nVersion: 0.1.0\n".encode()
         ),
         f"{dist_info}/WHEEL": (
             b"Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
         ),
     }
+    if include_init:
+        contents[f"{import_name}/__init__.py"] = b'"""Example."""\n'
+    contents[f"{typed_name or import_name}/py.typed"] = b""
     record_path = f"{dist_info}/RECORD"
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
@@ -40,6 +48,41 @@ def write_valid_wheel(path: Path) -> None:
     with zipfile.ZipFile(path, "w") as archive:
         for member, content in contents.items():
             archive.writestr(member, content)
+
+
+def write_valid_sdist(
+    path: Path,
+    *,
+    root: str | None = None,
+    metadata_version: str = "2.4",
+    include_pyproject: bool = True,
+    build_requires: str = '"packaging>=25"',
+) -> None:
+    root = root or path.name.removesuffix(".tar.gz")
+    contents = {
+        f"{root}/PKG-INFO": (
+            f"Metadata-Version: {metadata_version}\nName: example-project\nVersion: 0.1.0\n".encode()
+        ),
+    }
+    if include_pyproject:
+        contents[f"{root}/pyproject.toml"] = (
+            f'[build-system]\nrequires = [{build_requires}]\nbuild-backend = "example.build"\n'.encode()
+        )
+    with tarfile.open(path, "w:gz") as archive:
+        for member, content in contents.items():
+            info = tarfile.TarInfo(member)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+
+
+def check_package(destination: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "scripts/package_check.py", *args],
+        cwd=destination,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
 
 
 def test_release_workflow_permissions_and_order(template_root: Path, tmp_path: Path) -> None:
@@ -92,11 +135,43 @@ def test_release_workflow_permissions_and_order(template_root: Path, tmp_path: P
     )
     assert json.loads(checker.stdout)["assertions"]["publish.trusted"] is True
 
-    workflow_path.write_text(
+    mutations = (
+        workflow.replace("permissions: {}", "permissions: write-all", 1),
+        workflow.replace(
+            "  publish:\n",
+            "  sidecar:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    permissions:\n"
+            "      id-token: write\n"
+            "    steps:\n"
+            "      - run: echo privileged\n\n"
+            "  publish:\n",
+            1,
+        ),
         workflow.replace(
             "    steps:\n      - uses: actions/download-artifact@",
-            "    steps:\n      - run: echo project-controlled\n"
+            "    steps:\n"
+            "      - uses: actions/cache@a8c9b5f3b1b1eb85c3c0c8cb2fa6cce50bd48d2b\n"
             "      - uses: actions/download-artifact@",
+            1,
+        ),
+    )
+    for mutation in mutations:
+        workflow_path.write_text(mutation)
+        mutated_checker = subprocess.run(
+            [sys.executable, "scripts/release_workflow_check.py"],
+            cwd=destination,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        assert json.loads(mutated_checker.stdout)["assertions"]["publish.trusted"] is False
+
+    workflow_path.write_text(
+        workflow.replace(
+            "  publish:\n",
+            "  sidecar:\n    uses: ./.github/workflows/publish.yml\n\n  publish:\n",
+            1,
         )
     )
     mutated_checker = subprocess.run(
@@ -218,7 +293,10 @@ def test_artifact_checker_rejects_wrong_sdist_name(template_root: Path, tmp_path
     )
     dist = destination / "dist"
     dist.mkdir()
-    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl")
+    write_valid_wheel(
+        dist / "example_project-0.1.0-py3-none-any.whl",
+        import_name=answers["import_package_name"],
+    )
     with tarfile.open(dist / "wrong_name-0.1.0.tar.gz", "w:gz"):
         pass
 
@@ -232,3 +310,139 @@ def test_artifact_checker_rejects_wrong_sdist_name(template_root: Path, tmp_path
 
     assert result.returncode != 0
     assert "does not match the wheel" in result.stderr
+
+
+def test_artifact_checker_binds_typed_marker_to_import_package(
+    template_root: Path, tmp_path: Path
+) -> None:
+    answers = CopierAnswersFactory().to_copier_data()
+    destination = tmp_path / answers["distribution_name"]
+    run_copy(
+        src_path=str(template_root),
+        dst_path=destination,
+        data=answers,
+        defaults=True,
+        quiet=True,
+        skip_tasks=True,
+    )
+    dist = destination / "dist"
+    dist.mkdir()
+    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl", typed_name="other")
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz")
+
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "example_project/py.typed" in result.stderr
+
+
+def test_artifact_checker_requires_import_package_init(template_root: Path, tmp_path: Path) -> None:
+    answers = CopierAnswersFactory().to_copier_data()
+    destination = tmp_path / answers["distribution_name"]
+    run_copy(
+        src_path=str(template_root),
+        dst_path=destination,
+        data=answers,
+        defaults=True,
+        quiet=True,
+        skip_tasks=True,
+    )
+    dist = destination / "dist"
+    dist.mkdir()
+    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl", include_init=False)
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz")
+
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "example_project/__init__.py" in result.stderr
+
+
+def test_artifact_checker_rejects_stdlib_import_resolution(
+    template_root: Path, tmp_path: Path
+) -> None:
+    answers = CopierAnswersFactory().to_copier_data()
+    destination = tmp_path / answers["distribution_name"]
+    run_copy(
+        src_path=str(template_root),
+        dst_path=destination,
+        data=answers,
+        defaults=True,
+        quiet=True,
+        skip_tasks=True,
+    )
+    dist = destination / "dist"
+    dist.mkdir()
+    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl", import_name="json")
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz")
+
+    result = check_package(destination, "--online", "dist", "json")
+
+    assert result.returncode != 0
+    assert "candidate environment site-packages" in result.stderr
+
+
+def test_artifact_checker_rejects_invalid_core_metadata(
+    template_root: Path, tmp_path: Path
+) -> None:
+    answers = CopierAnswersFactory().to_copier_data()
+    destination = tmp_path / answers["distribution_name"]
+    run_copy(
+        src_path=str(template_root),
+        dst_path=destination,
+        data=answers,
+        defaults=True,
+        quiet=True,
+        skip_tasks=True,
+    )
+    dist = destination / "dist"
+    dist.mkdir()
+    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl", metadata_version="banana")
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz", metadata_version="banana")
+
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "wheel METADATA is not valid core metadata" in result.stderr
+
+    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl")
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "sdist PKG-INFO is not valid core metadata" in result.stderr
+
+
+def test_artifact_checker_requires_rooted_sdist_with_build_system(
+    template_root: Path, tmp_path: Path
+) -> None:
+    answers = CopierAnswersFactory().to_copier_data()
+    destination = tmp_path / answers["distribution_name"]
+    run_copy(
+        src_path=str(template_root),
+        dst_path=destination,
+        data=answers,
+        defaults=True,
+        quiet=True,
+        skip_tasks=True,
+    )
+    dist = destination / "dist"
+    dist.mkdir()
+    write_valid_wheel(dist / "example_project-0.1.0-py3-none-any.whl")
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz", root="wrong-root")
+
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "rooted at the sdist filename" in result.stderr
+
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz", include_pyproject=False)
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "pyproject.toml" in result.stderr
+
+    write_valid_sdist(dist / "example_project-0.1.0.tar.gz", build_requires='"not a requirement"')
+    result = check_package(destination, "dist", "example_project")
+
+    assert result.returncode != 0
+    assert "invalid requirement" in result.stderr

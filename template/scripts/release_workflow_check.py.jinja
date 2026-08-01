@@ -30,35 +30,32 @@ def workflow_steps(job: object) -> list[dict[str, Any]] | None:
 def trusted_publication(workflow: object) -> bool:
     if not isinstance(workflow, dict):
         return False
+    if workflow.get("permissions") != {}:
+        return False
     jobs = workflow.get("jobs")
-    if not isinstance(jobs, dict):
+    if not isinstance(jobs, dict) or set(jobs) != {"build", "publish"}:
         return False
     build = jobs.get("build")
     publish = jobs.get("publish")
     if not isinstance(build, dict) or not isinstance(publish, dict):
+        return False
+    if any(not isinstance(job, dict) or "uses" in job for job in jobs.values()):
         return False
     build_steps = workflow_steps(build)
     publish_steps = workflow_steps(publish)
     if build_steps is None or publish_steps is None:
         return False
 
-    needs = publish.get("needs")
-    needs_build = needs == "build" or (
-        isinstance(needs, list)
-        and "build" in needs
-        and all(isinstance(item, str) for item in needs)
-    )
     upload_steps = [step for step in build_steps if action_name(step) == "actions/upload-artifact"]
-    download_steps = [
-        step for step in publish_steps if action_name(step) == "actions/download-artifact"
-    ]
-    publication_steps = [
-        step for step in publish_steps if action_name(step) == "pypa/gh-action-pypi-publish"
-    ]
-    if len(upload_steps) != 1 or len(download_steps) != 1 or len(publication_steps) != 1:
+    if len(upload_steps) != 1 or len(publish_steps) != 2:
         return False
     upload = upload_steps[0]
-    download = download_steps[0]
+    download, publication = publish_steps
+    if (
+        action_name(download) != "actions/download-artifact"
+        or action_name(publication) != "pypa/gh-action-pypi-publish"
+    ):
+        return False
     upload_with = upload.get("with")
     download_with = download.get("with")
     if not isinstance(upload_with, dict) or not isinstance(download_with, dict):
@@ -78,11 +75,8 @@ def trusted_publication(workflow: object) -> bool:
         (
             build.get("permissions") == {"contents": "read"},
             publish.get("permissions") == {"id-token": "write"},
-            needs_build,
+            publish.get("needs") == "build",
             publish.get("environment") == "pypi",
-            all("run" not in step for step in publish_steps),
-            all(action_name(step) != "actions/checkout" for step in publish_steps),
-            publish_steps.index(download) < publish_steps.index(publication_steps[0]),
             upload_with.get("path") == "dist/",
             download_with.get("path") == "dist/",
             upload_with.get("name") == download_with.get("name"),

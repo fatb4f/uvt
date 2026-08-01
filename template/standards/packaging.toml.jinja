@@ -37,13 +37,17 @@ subject = "dependency specifiers"
 id = "PEP-517"
 status = "required"
 subject = "build interface"
-assertions = ["artifact-structure.wheel.metadata-valid", "artifact-structure.sdist.pkg-info-valid"]
+assertions = [
+  "artifact-structure.wheel.metadata-valid",
+  "artifact-structure.sdist.structure-valid",
+  "artifact-structure.sdist.pkg-info-valid",
+]
 
 [[standard]]
 id = "PEP-518"
 status = "required"
 subject = "build requirements"
-assertions = ["metadata.project.valid"]
+assertions = ["artifact-structure.sdist.pyproject-build-system-valid"]
 
 [[standard]]
 id = "PEP-621"
@@ -82,6 +86,7 @@ assertions = [
   "artifact-structure.wheel.metadata-valid",
   "artifact-structure.wheel.wheel-header-valid",
   "artifact-structure.wheel.record-valid",
+  "artifact-structure.wheel.contains-import-package",
   "artifact-structure.candidate.importable",
 ]
 

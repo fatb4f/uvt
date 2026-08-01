@@ -13,15 +13,18 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import venv
 import zipfile
 from email.policy import default
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Never
 
+from packaging.metadata import Metadata
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.tags import parse_tag
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
-from packaging.version import InvalidVersion, Version
+from packaging.version import Version
 
 
 def fail(message: str) -> Never:
@@ -49,10 +52,11 @@ def parse_message(content: bytes, source: str) -> email.message.Message:
     return message
 
 
-def parse_metadata(content: bytes, source: str) -> email.message.Message:
-    message = parse_message(content, source)
-    one_header(message, "Metadata-Version")
-    return message
+def parse_metadata(content: bytes, source: str) -> Metadata:
+    try:
+        return Metadata.from_email(content, validate=True)
+    except Exception as error:
+        fail(f"{source} is not valid core metadata: {error}")
 
 
 def wheel_record_valid(archive: zipfile.ZipFile, record_path: str) -> None:
@@ -88,7 +92,7 @@ def wheel_record_valid(archive: zipfile.ZipFile, record_path: str) -> None:
             fail(f"wheel RECORD has an invalid size for {path}")
 
 
-def wheel_metadata(wheel: Path) -> tuple[str, Version, dict[str, bool]]:
+def wheel_metadata(wheel: Path, import_name: str) -> tuple[str, Version, dict[str, bool]]:
     try:
         filename_name, filename_version, _, filename_tags = parse_wheel_filename(wheel.name)
     except ValueError as error:
@@ -114,12 +118,8 @@ def wheel_metadata(wheel: Path) -> tuple[str, Version, dict[str, bool]]:
             fail("wheel metadata files must share one dist-info directory")
 
         metadata = parse_metadata(archive.read(metadata_files[0]), "wheel METADATA")
-        name = one_header(metadata, "Name")
-        version_text = one_header(metadata, "Version")
-        try:
-            metadata_version = Version(version_text)
-        except InvalidVersion as error:
-            fail(f"wheel METADATA has an invalid Version: {error}")
+        name = metadata.name
+        metadata_version = metadata.version
         if canonicalize_name(name) != filename_name or metadata_version != filename_version:
             fail("wheel filename and METADATA Name/Version disagree")
 
@@ -140,9 +140,12 @@ def wheel_metadata(wheel: Path) -> tuple[str, Version, dict[str, bool]]:
             fail("wheel filename and WHEEL Tag headers disagree")
 
         wheel_record_valid(archive, record_files[0])
-        typed = any(name.endswith("/py.typed") for name in names)
-        if not typed:
-            fail("wheel is missing py.typed")
+        package_init = f"{import_name}/__init__.py"
+        typed_marker = f"{import_name}/py.typed"
+        if package_init not in names:
+            fail(f"wheel is missing {package_init}")
+        if typed_marker not in names:
+            fail(f"wheel is missing {typed_marker}")
 
     return (
         name,
@@ -152,18 +155,60 @@ def wheel_metadata(wheel: Path) -> tuple[str, Version, dict[str, bool]]:
             "wheel.metadata-valid": True,
             "wheel.wheel-header-valid": True,
             "wheel.record-valid": True,
+            "wheel.contains-import-package": True,
             "wheel.contains-py-typed": True,
         },
     )
 
 
-def inspect_artifacts(dist: Path) -> tuple[Path, str, dict[str, bool]]:
+def sdist_member(archive: tarfile.TarFile, path: str) -> tarfile.TarInfo:
+    members = [member for member in archive.getmembers() if member.isfile() and member.name == path]
+    if len(members) != 1:
+        fail(f"sdist must contain exactly one {path}")
+    return members[0]
+
+
+def sdist_root_valid(archive: tarfile.TarFile, expected_root: str) -> None:
+    for member in archive.getmembers():
+        path = PurePosixPath(member.name)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or not path.parts
+            or path.parts[0] != expected_root
+        ):
+            fail("sdist contents must be rooted at the sdist filename")
+
+
+def sdist_build_system_valid(content: bytes) -> None:
+    try:
+        document = tomllib.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        fail(f"sdist pyproject.toml is invalid: {error}")
+    build_system = document.get("build-system")
+    if not isinstance(build_system, dict):
+        fail("sdist pyproject.toml is missing [build-system]")
+    requires = build_system.get("requires")
+    if (
+        not isinstance(requires, list)
+        or not requires
+        or not all(isinstance(item, str) for item in requires)
+    ):
+        fail("sdist build-system.requires must be a non-empty string array")
+    try:
+        for requirement in requires:
+            Requirement(requirement)
+    except InvalidRequirement as error:
+        fail(f"sdist build-system.requires contains an invalid requirement: {error}")
+
+
+def inspect_artifacts(dist: Path, import_name: str) -> tuple[Path, str, dict[str, bool]]:
     wheels = list(dist.glob("*.whl"))
     sdists = list(dist.glob("*.tar.gz"))
     if len(wheels) != 1 or len(sdists) != 1:
         fail("dist must contain exactly one wheel and one sdist")
     wheel = wheels[0]
-    wheel_name, wheel_version, assertions = wheel_metadata(wheel)
+    wheel_name, wheel_version, assertions = wheel_metadata(wheel, import_name)
     sdist = sdists[0]
     try:
         sdist_name, sdist_version = parse_sdist_filename(sdist.name)
@@ -177,34 +222,54 @@ def inspect_artifacts(dist: Path) -> tuple[Path, str, dict[str, bool]]:
     except (OSError, tarfile.TarError) as error:
         fail(f"sdist is not a readable tar archive: {error}")
     with archive_context as archive:
-        package_info = [
-            member
-            for member in archive.getmembers()
-            if member.isfile() and member.name.count("/") == 1 and member.name.endswith("/PKG-INFO")
-        ]
-        if len(package_info) != 1:
-            fail("sdist must contain exactly one top-level PKG-INFO")
-        extracted = archive.extractfile(package_info[0])
+        expected_root = sdist.name.removesuffix(".tar.gz")
+        sdist_root_valid(archive, expected_root)
+        package_info = sdist_member(archive, f"{expected_root}/PKG-INFO")
+        pyproject = sdist_member(archive, f"{expected_root}/pyproject.toml")
+        extracted = archive.extractfile(package_info)
         if extracted is None:
             fail("cannot read sdist PKG-INFO")
         metadata = parse_metadata(extracted.read(), "sdist PKG-INFO")
-        package_name = one_header(metadata, "Name")
-        package_version_text = one_header(metadata, "Version")
-        try:
-            package_version = Version(package_version_text)
-        except InvalidVersion as error:
-            fail(f"sdist PKG-INFO has an invalid Version: {error}")
+        if Version(metadata.metadata_version) < Version("2.2"):
+            fail("sdist PKG-INFO must use Metadata-Version 2.2 or later")
+        package_name = metadata.name
+        package_version = metadata.version
         if canonicalize_name(package_name) != sdist_name or package_version != sdist_version:
             fail("sdist filename and PKG-INFO Name/Version disagree")
+        extracted = archive.extractfile(pyproject)
+        if extracted is None:
+            fail("cannot read sdist pyproject.toml")
+        sdist_build_system_valid(extracted.read())
 
     assertions.update(
         {
             "sdist.filename-parses": True,
             "sdist.name-version-match-wheel": True,
+            "sdist.structure-valid": True,
+            "sdist.pyproject-build-system-valid": True,
             "sdist.pkg-info-valid": True,
         }
     )
     return wheel, str(wheel_version), assertions
+
+
+IMPORT_CHECK = """
+import importlib
+import sysconfig
+from pathlib import Path
+
+module = importlib.import_module(__import__("sys").argv[1])
+location = getattr(module, "__file__", None)
+site_packages = [
+    Path(path).resolve()
+    for key in ("purelib", "platlib")
+    if (path := sysconfig.get_path(key))
+]
+if location is None or not any(
+    Path(location).resolve().is_relative_to(path) for path in site_packages
+):
+    raise SystemExit("import did not resolve from the candidate environment site-packages")
+"""
 
 
 def check_install(wheel: Path, import_name: str, online: bool) -> dict[str, bool]:
@@ -243,7 +308,7 @@ def check_install(wheel: Path, import_name: str, online: bool) -> dict[str, bool
         run(
             str(python),
             "-c",
-            "import importlib; importlib.import_module(__import__('sys').argv[1])",
+            IMPORT_CHECK,
             import_name,
         )
     if online:
@@ -259,7 +324,7 @@ def main() -> None:
     parser.add_argument("import_name")
     args = parser.parse_args()
 
-    wheel, version, assertions = inspect_artifacts(args.dist)
+    wheel, version, assertions = inspect_artifacts(args.dist, args.import_name)
     assertions.update(check_install(wheel, args.import_name, args.online))
     report = {"probe": "artifact-structure", "assertions": assertions, "version": version}
     if args.report_json:
