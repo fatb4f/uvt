@@ -1,0 +1,118 @@
+[[probe]]
+id = "metadata"
+phase = "locked"
+argv = [
+  "uv", "run", "--isolated", "--locked", "--no-default-groups", "--group", "test",
+  "python", "scripts/metadata_check.py",
+]
+
+[[probe]]
+id = "artifact-structure"
+phase = "post-build"
+argv = [
+  "uv", "run", "--isolated", "--locked", "--no-default-groups", "--group", "test", "python",
+  "scripts/package_check.py", "--report-json", "-", "dist", {{ import_package_name | tojson }},
+]
+
+[[probe]]
+id = "release-workflow"
+phase = "post-build"
+argv = [
+  "uv", "run", "--isolated", "--locked", "--no-default-groups", "--group", "test", "python",
+  "scripts/release_workflow_check.py",
+]
+
+[[standard]]
+id = "PEP-440"
+status = "required"
+subject = "versions"
+assertions = ["artifact-structure.wheel.filename-parses", "artifact-structure.wheel.metadata-valid"]
+
+[[standard]]
+id = "PEP-508"
+status = "deferred"
+subject = "dependency specifiers"
+
+[[standard]]
+id = "PEP-517"
+status = "required"
+subject = "build interface"
+assertions = ["artifact-structure.wheel.metadata-valid", "artifact-structure.sdist.pkg-info-valid"]
+
+[[standard]]
+id = "PEP-518"
+status = "required"
+subject = "build requirements"
+assertions = ["metadata.project.valid"]
+
+[[standard]]
+id = "PEP-621"
+status = "required"
+subject = "project metadata"
+assertions = ["metadata.project.valid"]
+
+[[standard]]
+id = "PEP-639"
+status = "deferred"
+subject = "license expression and files"
+
+[[standard]]
+id = "PEP-660"
+status = "required"
+subject = "editable installation"
+assertions = ["metadata.editable-install.valid"]
+
+[[standard]]
+id = "PEP-735"
+status = "deferred"
+subject = "dependency groups"
+
+[[standard]]
+id = "PEP-561"
+status = "required"
+subject = "typed package marker"
+assertions = ["artifact-structure.wheel.contains-py-typed"]
+
+[[standard]]
+id = "PEP-427"
+status = "required"
+subject = "wheel"
+assertions = [
+  "artifact-structure.wheel.filename-parses",
+  "artifact-structure.wheel.metadata-valid",
+  "artifact-structure.wheel.wheel-header-valid",
+  "artifact-structure.wheel.record-valid",
+  "artifact-structure.candidate.importable",
+]
+
+[[standard]]
+id = "PEP-625"
+status = "required"
+subject = "sdist filename"
+assertions = [
+  "artifact-structure.sdist.filename-parses",
+  "artifact-structure.sdist.name-version-match-wheel",
+]
+
+[[standard]]
+id = "PEP-643"
+status = "required"
+subject = "sdist metadata"
+assertions = ["artifact-structure.sdist.pkg-info-valid"]
+
+[[standard]]
+id = "PEP-740"
+status = "conditional"
+condition = "publish_to_pypi"
+subject = "publication attestations"
+assertions = ["release-workflow.publish.trusted"]
+
+[[standard]]
+id = "PEP-751"
+status = "deferred"
+subject = "standard lockfile export"
+
+[[standard]]
+id = "PEP-794"
+status = "deferred"
+subject = "declared import names"

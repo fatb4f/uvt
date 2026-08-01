@@ -1,0 +1,108 @@
+[[probe]]
+id = "render"
+phase = "template"
+argv = ["uv", "run", "--locked", "python", "scripts/standards_probe.py", "render", "matrix", "tests/test_render.py::test_render_matrix"]
+
+[[probe]]
+id = "acceptance"
+phase = "template"
+argv = ["uv", "run", "--locked", "python", "scripts/standards_probe.py", "acceptance", "qualifies", "tests/test_acceptance.py::test_canonical_generated_project_qualifies"]
+
+[[probe]]
+id = "release"
+phase = "template"
+argv = ["uv", "run", "--locked", "python", "scripts/standards_probe.py", "release", "trusted-publication", "tests/test_release.py::test_release_workflow_permissions_and_order"]
+
+[[probe]]
+id = "lifecycle"
+phase = "template"
+argv = ["uv", "run", "--locked", "python", "scripts/standards_probe.py", "lifecycle", "converges", "tests/test_lifecycle.py::test_update_converges_with_fresh_candidate_render"]
+
+[[standard]]
+id = "PEP-440"
+status = "required"
+subject = "versions"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-508"
+status = "required"
+subject = "dependency specifiers"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-517"
+status = "required"
+subject = "build interface"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-518"
+status = "required"
+subject = "build requirements"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-621"
+status = "required"
+subject = "project metadata"
+assertions = ["render.matrix"]
+
+[[standard]]
+id = "PEP-639"
+status = "required"
+subject = "license expression and files"
+assertions = ["render.matrix"]
+
+[[standard]]
+id = "PEP-660"
+status = "required"
+subject = "editable installation"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-735"
+status = "required"
+subject = "dependency groups"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-561"
+status = "required"
+subject = "typed package marker"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-427"
+status = "required"
+subject = "wheel"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-625"
+status = "required"
+subject = "sdist filename"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-643"
+status = "required"
+subject = "sdist metadata"
+assertions = ["acceptance.qualifies"]
+
+[[standard]]
+id = "PEP-740"
+status = "conditional"
+condition = "publish_to_pypi"
+subject = "publication attestations"
+assertions = ["release.trusted-publication"]
+
+[[standard]]
+id = "PEP-751"
+status = "deferred"
+subject = "standard lockfile export"
+
+[[standard]]
+id = "PEP-794"
+status = "deferred"
+subject = "declared import names"

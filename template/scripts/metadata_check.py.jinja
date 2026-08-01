@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).parents[1]
+IMPORT_NAME = {{ import_package_name | tojson }}
+DISTRIBUTION_NAME = {{ distribution_name | tojson }}
+
+
+def main() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    groups = tomllib.loads((ROOT / "pyproject.toml").read_text())["dependency-groups"]
+    package = __import__(IMPORT_NAME)
+    assertions = {
+        "project.valid": project["name"] == DISTRIBUTION_NAME
+        and project["requires-python"] == ">=3.12"
+        and bool(project["version"]),
+        "dependency-groups.valid": {"test", "quality", "dev"} <= set(groups),
+        "license.valid": project["license"] in {"MIT", "Apache-2.0"}
+        and (ROOT / "LICENSE").is_file(),
+        "editable-install.valid": bool(package.__doc__)
+        and importlib.metadata.version(DISTRIBUTION_NAME) == project["version"],
+    }
+    print(json.dumps({"probe": "metadata", "assertions": assertions}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main(){{ '\n' -}}

@@ -1,0 +1,24 @@
+from __future__ import annotations
+
+import email
+import sys
+import zipfile
+from pathlib import Path
+
+
+def main() -> None:
+    wheels = list(Path(sys.argv[1]).glob("*.whl"))
+    if len(wheels) != 1:
+        raise SystemExit("expected exactly one wheel")
+    with zipfile.ZipFile(wheels[0]) as archive:
+        metadata = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+        if len(metadata) != 1:
+            raise SystemExit("expected exactly one wheel METADATA")
+        version = email.message_from_bytes(archive.read(metadata[0]))["Version"]
+    if not version:
+        raise SystemExit("wheel METADATA is missing Version")
+    print(version)
+
+
+if __name__ == "__main__":
+    main(){{ '\n' -}}

@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "missing: uv" >&2
+    exit 1
+fi
+
+if ! command -v just >/dev/null 2>&1; then
+    echo "missing: just" >&2
+    exit 1
+fi
+
+if ! command -v lazyjust >/dev/null 2>&1; then
+    echo "optional: lazyjust not installed"
+fi
+

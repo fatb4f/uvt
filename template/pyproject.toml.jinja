@@ -1,0 +1,52 @@
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = {{ distribution_name | tojson }}
+version = "0.1.0"
+description = {{ description | tojson }}
+readme = "README.md"
+requires-python = ">=3.12"
+license = "{{ license }}"
+license-files = ["LICENSE"]
+authors = [
+  { name = {{ author_name | tojson }}, email = {{ author_email | tojson }} },
+]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Repository = {{ ('https://github.com/' ~ github_owner ~ '/' ~ distribution_name) | tojson }}
+
+[dependency-groups]
+test = [
+  "packaging>=25",
+  "pytest>=9",
+  "pytest-cov>=7",
+  "PyYAML>=6",
+]
+quality = [
+  "ruff>=0.14",
+  "ty>=0.0.1a24",
+]
+dev = [
+  { include-group = "test" },
+  { include-group = "quality" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

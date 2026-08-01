@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).parents[1]
+TIMEOUT_SECONDS = 120
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def answer_bool(name: str) -> bool:
+    answers = (ROOT / ".copier-answers.yml").read_text()
+    match = re.search(rf"^{re.escape(name)}:\s*(true|false)\s*$", answers, re.MULTILINE | re.I)
+    if match is None:
+        fail(f"missing or unknown condition: {name}")
+    assert match is not None
+    return match.group(1).lower() == "true"
+
+
+def main() -> None:
+    manifest = tomllib.loads((ROOT / "standards" / "packaging.toml").read_text())
+    probes = manifest.get("probe", [])
+    standards = manifest.get("standard", [])
+    probe_map = {probe["id"]: probe for probe in probes}
+    if len(probe_map) != len(probes):
+        fail("duplicate probe identifier")
+    invalid_probe = any(
+        not isinstance(probe.get("argv"), list)
+        or not all(isinstance(item, str) for item in probe["argv"])
+        for probe in probes
+    )
+    if invalid_probe:
+        fail("probe argv must be a string array")
+
+    enabled = answer_bool("publish_to_pypi")
+    workflow_exists = (ROOT / ".github" / "workflows" / "publish.yml").exists()
+    if workflow_exists is not enabled:
+        fail("publish_to_pypi must exactly match publish workflow presence")
+
+    required: list[tuple[str, str]] = []
+    seen_standards: set[str] = set()
+    for standard in standards:
+        standard_id = standard.get("id")
+        if not isinstance(standard_id, str) or standard_id in seen_standards:
+            fail("duplicate or invalid standard identifier")
+        seen_standards.add(standard_id)
+        status = standard.get("status")
+        if status not in {"required", "conditional", "deferred"}:
+            fail(f"invalid status for {standard_id}")
+        if status == "deferred":
+            continue
+        if status == "conditional":
+            condition = standard.get("condition")
+            if condition != "publish_to_pypi":
+                fail(f"unknown condition for {standard_id}")
+            if not enabled:
+                continue
+        assertions = standard.get("assertions")
+        if not isinstance(assertions, list) or not all(
+            isinstance(item, str) for item in assertions
+        ):
+            fail(f"invalid assertions for {standard_id}")
+        required.extend((standard_id, assertion) for assertion in assertions)
+
+    reports: dict[str, dict[str, object]] = {}
+    for probe_id in sorted({assertion.partition(".")[0] for _, assertion in required}):
+        probe = probe_map.get(probe_id)
+        if probe is None:
+            fail(f"unknown probe: {probe_id}")
+        assert probe is not None
+        argv = probe["argv"]
+        assert isinstance(argv, list)
+        result = subprocess.run(
+            argv, cwd=ROOT, check=False, text=True, capture_output=True, timeout=TIMEOUT_SECONDS
+        )
+        if result.returncode:
+            fail(f"probe failed: {probe_id}\n{result.stderr}")
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            fail(f"probe did not emit JSON: {probe_id}: {error}")
+        if report.get("probe") != probe_id or not isinstance(report.get("assertions"), dict):
+            fail(f"invalid report from probe: {probe_id}")
+        reports[probe_id] = report["assertions"]
+
+    for standard_id, assertion in sorted(required):
+        probe_id, separator, assertion_id = assertion.partition(".")
+        value = reports.get(probe_id, {}).get(assertion_id) if separator else None
+        if value is not True:
+            fail(f"failed assertion: {standard_id}: {assertion}")
+        print(f"PASS {standard_id}: {assertion}")
+
+
+if __name__ == "__main__":
+    main(){{ '\n' -}}

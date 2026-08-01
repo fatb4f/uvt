@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).parents[1]
+
+
+def test_publish_workflow_is_conditional() -> None:
+    workflow = ROOT / ".github" / "workflows" / "publish.yml"
+{% if publish_to_pypi %}
+    import runpy
+
+    import yaml
+
+    checker = runpy.run_path(ROOT / "scripts" / "release_workflow_check.py")
+    assert checker["trusted_publication"](yaml.safe_load(workflow.read_text()))
+{% else %}
+    assert not workflow.exists()
+{% endif -%}
